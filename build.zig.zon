@@ -1,0 +1,33 @@
+.{
+    .name = .zistory,
+    .version = "0.0.0",
+    .fingerprint = 0xd7fbfdac645780a2,
+    .minimum_zig_version = "0.15.0-dev.847+850655f06",
+    .dependencies = .{
+        .raylib_zig = .{
+            .url = "git+https://github.com/Not-Nik/raylib-zig?ref=devel#5013830647196ba938a3a25a36b8245606e9a9cd",
+            .hash = "raylib_zig-5.6.0-dev-KE8REM0tBQAHVn9Xjqlgu9l1qgfTmP8aJa1kLhD584bV",
+        },
+        .clap = .{
+            .url = "git+https://github.com/Hejsil/zig-clap#cc5c6a5d71a317ed4b0ad776842d1d0655f72d0a",
+            .hash = "clap-0.10.0-oBajB7jkAQAZ4cKLlzkeV9mDu2yGZvtN2QuOyfAfjBij",
+        },
+        .raylib_lists = .{
+            .url = "git+https://github.com/RomaricKc1/raylib-lists#687f17fcb98518225ce6bb12747ac1ded50ce849",
+            .hash = "raylib_lists-0.0.0-FnXSOZtHAAB2A8qBRqkTO16lAKB8UDT8lcl2kZZ4n7gp",
+        },
+        .raylib_bar_chart = .{
+            .url = "git+https://github.com/RomaricKc1/raylib-bar_chart#f4f2fb041bc2c23da1428a20d7e648712637032b",
+            .hash = "raylib_bar_chart-0.0.0-uR1Yxp9DAACbbVVqIMO_QSNtIzb0WipAzD9RaZq51ZA0",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "img",
+        "testsample",
+        "README.md",
+        "LICENSE",
+    },
+}
