@@ -5,7 +5,7 @@ frequency on a GUI.
 
 Pretty rough visuals (WIP). But it kinda works.
 
-Made with [Raylib-zig](https://github.com/Not-Nik/raylib-zig) and two (2) custom
+Made with [Raylib-zig](https://github.com/raylib-zig/raylib-zig) and two (2) custom
 widgets designed specifically for the project. Nonetheless, they can be adapted
 to suit ones own need.
 
