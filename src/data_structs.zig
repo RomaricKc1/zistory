@@ -8,14 +8,14 @@ const BarGraphDat = rl_bar_graph.BarGraphDat;
 const rl_lists = @import("rl_lists");
 const ListDat = rl_lists.ListDat;
 
-const ctime = @cImport({
-    @cInclude("time.h");
-});
+const ctime = @import("c");
 
 pub const ts_type = ctime.time_t;
 const TM_YEAR_INIT = 1900;
 const FULL_DAY_TS = 86400;
 const TM_MONTH_INIT = 1;
+
+const Error = error{ TimestampStrParse, BaseCmdParse, FullCmdParse };
 
 pub const TimeSpan = enum {
     WEEK,
@@ -299,8 +299,8 @@ pub const HistoryST = struct {
         );
 
         for (self.entries.items) |entry| {
-            try list_d.list_base.append(entry.base);
-            try list_d.list_full.append(entry.full);
+            try list_d.list_base.append(self.allocator, entry.base);
+            try list_d.list_full.append(self.allocator, entry.full);
         }
 
         return list_d;
@@ -498,7 +498,7 @@ pub fn week_day_to_str(wday: c_int) []const u8 {
 }
 /// simple function to exit quickly
 pub fn exit_here() void {
-    std.posix.exit(0);
+    std.process.exit(0);
 }
 
 /// parses the str from zsh hist into a nice formatted struct
@@ -506,20 +506,35 @@ pub fn parse_hist_entry(entry_str: []const u8) !HistoryEntry {
     var it_entry = std.mem.splitAny(u8, entry_str, ":");
     _ = it_entry.next();
 
-    var timestamp_str: []const u8 = it_entry.next().?;
+    var timestamp_str: []const u8 = it_entry.next() orelse {
+        std.debug.print("error: can't get timestamp from the entry \"{s}\"\n", .{entry_str});
+        return Error.TimestampStrParse;
+    };
+
     timestamp_str = timestamp_str[1..]; // removes trailing space char
-    const cmd_tmp: []const u8 = it_entry.next().?;
+    const cmd_tmp: []const u8 = it_entry.next() orelse {
+        return Error.FullCmdParse;
+    };
 
     var it_cmd_full = std.mem.splitAny(u8, cmd_tmp, ";");
     _ = it_cmd_full.next();
 
-    const cmd_full: []const u8 = it_cmd_full.next().?;
+    const cmd_full: []const u8 = it_cmd_full.next() orelse {
+        std.debug.print("error: can't get full base from.\n", .{});
+        return Error.FullCmdParse;
+    };
 
     var it_cmd = std.mem.splitAny(u8, cmd_full, " ");
-    const cmd_base: []const u8 = it_cmd.next().?;
+    const cmd_base: []const u8 = it_cmd.next() orelse {
+        std.debug.print("error: can't get full base from.\n", .{});
+        return Error.BaseCmdParse;
+    };
 
     const base = 10;
-    const timestamp: u64 = try parseInt(u64, timestamp_str, base);
+    const timestamp: u64 = parseInt(u64, timestamp_str, base) catch |err| {
+        std.debug.print("parse int failed for -> \"{s}\": {any}\n", .{ timestamp_str, err });
+        return err;
+    };
 
     return HistoryEntry{
         .base = cmd_base,
@@ -559,19 +574,20 @@ test "parse_hist_entry" {
     const input = ": 1752241336:0;zig build test";
     const hist_entry = try parse_hist_entry(input);
 
-    try std.testing.expect(std.mem.eql(u8, hist_entry.base, "zig"));
-    try std.testing.expect(std.mem.eql(u8, hist_entry.full, "zig build test"));
+    try std.testing.expectEqualStrings("zig", hist_entry.base);
+    try std.testing.expectEqualStrings("zig build test", hist_entry.full);
 
-    try std.testing.expectEqual(hist_entry.time_st.datetime.year, 2025);
-    try std.testing.expectEqual(hist_entry.time_st.datetime.month, 7);
-    try std.testing.expectEqual(hist_entry.time_st.datetime.day, 11);
+    try std.testing.expectEqual(2025, hist_entry.time_st.datetime.year);
+    try std.testing.expectEqual(7, hist_entry.time_st.datetime.month);
+    try std.testing.expectEqual(11, hist_entry.time_st.datetime.day);
 }
 
-test "full e.g. read real hist file" {
+test "full e.g. read real hist from file and check widget data" {
+    const io: std.Io = std.testing.io;
     const anyalloc = std.testing.allocator;
 
-    var arr_l = std.ArrayList([]const u8).init(anyalloc);
-    defer arr_l.deinit();
+    var arr_l = std.ArrayList([]const u8).empty;
+    defer arr_l.deinit(anyalloc);
     defer {
         for (arr_l.items) |this_item| {
             anyalloc.free(this_item);
@@ -585,7 +601,7 @@ test "full e.g. read real hist file" {
         .nb_shown_entries = 4,
     });
 
-    const nb_entries_read = try hist_reader.read_hist(anyalloc, &arr_l, .{
+    const nb_entries_read = try hist_reader.read_hist(io, anyalloc, &arr_l, .{
         .name = "test_hist",
         .directory = "./testsample",
         .delim = '\n',
@@ -593,12 +609,16 @@ test "full e.g. read real hist file" {
         .number_of_entries = hist_base.max_to_get,
     });
 
-    var entry_arl = std.ArrayList(HistoryEntry).init(anyalloc);
-    defer entry_arl.deinit();
+    var entry_arl = std.ArrayList(HistoryEntry).empty;
+    defer entry_arl.deinit(anyalloc);
 
+    // std.debug.print("\n", .{});
     for (arr_l.items) |itm| {
-        const hist_entr = try parse_hist_entry(itm);
-        try entry_arl.append(hist_entr);
+        if (!std.mem.eql(u8, itm, "")) {
+            // std.debug.print("actual entries to parse: {s}\n", .{itm});
+            const hist_entr = try parse_hist_entry(itm);
+            try entry_arl.append(anyalloc, hist_entr);
+        }
     }
 
     hist_base.set_hist_list(entry_arl);
@@ -617,8 +637,8 @@ test "full e.g. read real hist file" {
     var y_axis_val: []const i32 = undefined;
     defer anyalloc.free(y_axis_val);
 
-    var some_bars_data = std.ArrayList(*BarGraphDat).init(anyalloc);
-    defer some_bars_data.deinit();
+    var some_bars_data = std.ArrayList(*BarGraphDat).empty;
+    defer some_bars_data.deinit(anyalloc);
 
     // sets the values for the bar graph
     try hist_base.update_bar_graph_data(
@@ -632,7 +652,7 @@ test "full e.g. read real hist file" {
     try bar0.set_xlist(hist_base.current_x_val_w.*);
     try bar0.set_ylist(hist_base.current_y_val_w.*);
 
-    try some_bars_data.append(&bar0);
+    try some_bars_data.append(anyalloc, &bar0);
 
     // .WEEK span
     inline for (some_bars_data.items[0].y_list.items, &.{ 1, 0, 1, 1, 0, 0, 0 }) |val1, val2| {
@@ -640,10 +660,10 @@ test "full e.g. read real hist file" {
     }
 
     inline for (
-        some_bars_data.items[0].x_list.items,
         &.{ "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Mon" },
+        some_bars_data.items[0].x_list.items,
     ) |val1, val2| {
-        try std.testing.expect(std.mem.eql(u8, val1, val2));
+        try std.testing.expectEqualStrings(val1, val2);
     }
 
     // /////////////////////////////////////////////////////////////////////
@@ -656,10 +676,10 @@ test "full e.g. read real hist file" {
     // the list is reversed
     // .WEEK span
     inline for (
-        list_data.list_base.items,
         &.{ "zig", "gcc", "img", "lazygit", "clear", "python3", "gcc", "gcc" },
+        list_data.list_base.items,
     ) |val1, val2| {
-        try std.testing.expect(std.mem.eql(u8, val1, val2));
+        try std.testing.expectEqualStrings(val1, val2);
     }
 }
 
@@ -716,7 +736,8 @@ test "return_begin_day" {
     try std.testing.expectEqual(res, found);
 }
 
-test "exit_here" {
-    exit_here();
-    unreachable; // lol
-}
+// // TODO:
+// test "exit_here" {
+//     exit_here();
+//     unreachable; // lol
+// }

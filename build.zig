@@ -24,9 +24,17 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // c translation
+    const translate_c = b.addTranslateC(.{
+        .root_source_file = b.path("src/c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     mod.addImport("data_structs", data_s_mod);
     mod.addImport("hist_reader", hist_reader_mod);
     data_s_mod.addImport("hist_reader", hist_reader_mod);
+    data_s_mod.addImport("c", translate_c.createModule());
 
     const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
@@ -72,7 +80,7 @@ pub fn build(b: *std.Build) void {
     exe_options.addOption([]const u8, "version", exe_version);
 
     // linking
-    exe.linkLibrary(raylib_artifact);
+    exe.root_module.linkLibrary(raylib_artifact);
     exe.root_module.addImport("raylib", raylib);
     exe.root_module.addImport("raygui", raygui);
     exe.root_module.addImport("rl_bar_graph", rl_bar_chart);
@@ -123,9 +131,7 @@ pub fn build(b: *std.Build) void {
     });
 
     // code coverage
-    const allocator = std.heap.page_allocator;
-    const xgd_home = std.process.getEnvVarOwned(allocator, "HOME") catch "";
-    defer allocator.free(xgd_home);
+    const xgd_home = b.graph.environ_map.get("HOME") orelse "";
     const exclude_pat = b.fmt("--exclude-path={s}/.cache/zig", .{xgd_home});
 
     const code_cov = b.option(bool, "test_coverage", "Gen the code coverage") orelse false;

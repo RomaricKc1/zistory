@@ -109,7 +109,7 @@ pub fn screen_pre(opts: *MainAppSt) anyerror!void {
             }
         },
         .ABOUT => {
-            if (rl.isKeyPressed(.enter) or rl.isGestureDetected(.tap)) {
+            if (rl.isKeyPressed(.enter) or rl.isGestureDetected(.{ .tap = true })) {
                 opts.game_screen = .MAIN;
             }
 
@@ -135,7 +135,7 @@ pub fn screen_pre(opts: *MainAppSt) anyerror!void {
             }
         },
         .MAIN => {
-            if (rl.isKeyPressed(.enter) or rl.isGestureDetected(.tap)) {
+            if (rl.isKeyPressed(.enter) or rl.isGestureDetected(.{ .tap = true })) {
                 opts.game_screen = .ABOUT;
             }
 
@@ -188,7 +188,7 @@ pub fn format_cmd_text(
     text: []const u8,
 ) ![:0]const u8 {
     if (command) |cmd| {
-        const anytext = try std.fmt.allocPrint(allocator, "{s} {s}", .{ text, cmd });
+        const anytext = try std.fmt.allocPrintSentinel(allocator, "{s} {s}", .{ text, cmd }, 0);
         defer allocator.free(anytext);
         return rl.textFormat("%s", .{anytext.ptr});
     } else {
@@ -196,11 +196,11 @@ pub fn format_cmd_text(
     }
 }
 
-pub fn run_auto(allocator: std.mem.Allocator, app_ptr: **MainAppSt) !void {
+pub fn run_auto(io: std.Io, allocator: std.mem.Allocator, app_ptr: **MainAppSt) !void {
     var app = app_ptr.*;
 
-    var arr_l = std.ArrayList([]const u8).init(allocator);
-    defer arr_l.deinit();
+    var arr_l = std.ArrayList([]const u8).empty;
+    defer arr_l.deinit(allocator);
     defer {
         for (arr_l.items) |this_item| {
             allocator.free(this_item);
@@ -215,7 +215,7 @@ pub fn run_auto(allocator: std.mem.Allocator, app_ptr: **MainAppSt) !void {
     });
     app.main_hist = &hist_base;
 
-    _ = try hist_reader.read_hist(allocator, &arr_l, .{
+    _ = try hist_reader.read_hist(io, allocator, &arr_l, .{
         .name = app.main_hist_file,
         .directory = ".",
         .delim = '\n',
@@ -223,12 +223,15 @@ pub fn run_auto(allocator: std.mem.Allocator, app_ptr: **MainAppSt) !void {
         .number_of_entries = app.main_hist.max_to_get,
     });
 
-    var entry_arl = std.ArrayList(HistoryEntry).init(allocator);
-    defer entry_arl.deinit();
+    var entry_arl = std.ArrayList(HistoryEntry).empty;
+    defer entry_arl.deinit(allocator);
 
     for (arr_l.items) |itm| {
-        const hist_entr = try parse_hist_entry(itm);
-        try entry_arl.append(hist_entr);
+        const hist_entr = parse_hist_entry(itm) catch |err| {
+            std.debug.print("parse failed for -> \"{s}\": {any}\n", .{ itm, err });
+            return err;
+        };
+        try entry_arl.append(allocator, hist_entr);
     }
 
     app.main_hist.set_hist_list(entry_arl);
@@ -295,11 +298,11 @@ pub fn run_auto(allocator: std.mem.Allocator, app_ptr: **MainAppSt) !void {
         time_span,
     );
 
-    var bars = std.ArrayList(*BarGraphDat).init(allocator);
-    defer bars.deinit();
+    var bars = std.ArrayList(*BarGraphDat).empty;
+    defer bars.deinit(allocator);
 
-    try bars.append(&bar_week);
-    try bars.append(&bar_month);
+    try bars.append(allocator, &bar_week);
+    try bars.append(allocator, &bar_month);
 
     // wires up and run
     try app.set_bar_graph_data(bars);
@@ -351,9 +354,9 @@ test "format_cmd_text" {
 
     var cmd: ?[]const u8 = null;
     var some: [:0]const u8 = try format_cmd_text(allocator, cmd, "LOGO SCREEN");
-    try std.testing.expect(std.mem.eql(u8, some, "LOGO SCREEN"));
+    try std.testing.expectEqualStrings("LOGO SCREEN", some);
 
     cmd = "zig";
     some = try format_cmd_text(allocator, cmd, "LOGO SCREEN");
-    try std.testing.expect(std.mem.eql(u8, some, "LOGO SCREEN zig"));
+    try std.testing.expectEqualStrings("LOGO SCREEN zig", some);
 }

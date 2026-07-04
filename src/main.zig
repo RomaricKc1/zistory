@@ -13,9 +13,9 @@ const defaults = @import("defaults.zig");
 
 var used_hist: []const u8 = undefined;
 
-fn run(allocator: std.mem.Allocator, output: anytype) !void {
+fn run(init: std.process.Init, allocator: std.mem.Allocator, output: anytype) !void {
     // Parses command-line arguments
-    const cli = try clap.parse(clap.Help, &args.params, args.parsers, .{ .allocator = allocator });
+    const cli = try clap.parse(clap.Help, &args.params, args.parsers, init.minimal.args, .{ .allocator = allocator });
     defer cli.deinit();
     if (cli.args.help != 0) {
         try output.print("{s}\n", .{args.banner});
@@ -44,24 +44,22 @@ fn run(allocator: std.mem.Allocator, output: anytype) !void {
 
     used_hist = new_cfg.main_hist_file;
 
-    try zistory.run_auto(allocator, &new_cfg);
+    try zistory.run_auto(init.io, allocator, &new_cfg);
 
     return;
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.arena.allocator();
 
-    defer {
-        const deinit_stat = gpa.deinit();
-        if (deinit_stat == .leak) @panic("Mem has leaked lol.");
-    }
+    var stdout_writer = std.Io.File.stdout().writer(io, &.{});
+    const stdout = &stdout_writer.interface;
 
-    const stdout = std.io.getStdOut().writer();
-    const stderr = std.io.getStdErr().writer();
+    var stderr_writer = std.Io.File.stderr().writer(io, &.{});
+    const stderr = &stderr_writer.interface;
 
-    run(allocator, stdout) catch |err| {
+    run(init, allocator, stdout) catch |err| {
         switch (err) {
             error.FileNotFound => try stderr.print(
                 "An error has occurred: Your history \"{s}\" file doesn't exist :(\n",

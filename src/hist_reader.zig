@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const NB_ENTRY_READ_TYPE = u16;
 const CONTINUE_READING = true;
@@ -13,83 +14,124 @@ const ReadParams = struct {
     number_of_entries: NB_ENTRY_READ_TYPE,
 };
 
-pub fn read_file_alloc(allocator: std.mem.Allocator, file: std.fs.File, bytes: u64) ![]u8 {
-    return try file.reader().readAllAlloc(allocator, @intCast(bytes));
+pub fn push_cpy(allocator: std.mem.Allocator, into: *std.ArrayList([]const u8), src: []const u8) !void {
+    const len = src.len;
+    const buf = try allocator.alloc(u8, len);
+
+    std.mem.copyForwards(u8, buf, src);
+    // std.debug.print("pushing -> {s}\n", .{buf});
+    try into.append(allocator, buf[0..len]);
 }
 
 pub fn read_file_delim(
-    file: std.fs.File,
-    into: *std.ArrayList(u8),
+    file: std.Io.File,
+    into: *std.ArrayList([]const u8),
     delim: u8,
-    max_size: u64,
-) !bool {
-    file.reader().readUntilDelimiterArrayList(into, delim, max_size) catch |err| {
-        switch (err) {
-            error.EndOfStream => {
-                // std.debug.print("stop, no more stuff to read", .{});
-                return END_READING;
-            },
-            else => {
-                std.debug.print("error: -> {any}\n", .{err});
-            },
-        }
-    };
+    io: std.Io,
+    allocator: std.mem.Allocator,
+) !u16 {
+    var cnt: NB_ENTRY_READ_TYPE = 0;
+    var curr_it: u8 = 0;
 
-    return CONTINUE_READING;
+    var buf: [8192]u8 = undefined;
+    var reader: std.Io.File.Reader = file.reader(io, &buf);
+
+    var tmp_l = std.ArrayList(u8).empty;
+    defer tmp_l.deinit(allocator);
+
+    var all_elements = std.ArrayList([]const u8).empty;
+    defer all_elements.deinit(allocator);
+
+    while (try reader.interface.takeDelimiter(delim)) |line| {
+        try all_elements.append(allocator, line);
+    }
+
+    var next_line: []const u8 = undefined;
+    var this_line: []const u8 = undefined;
+
+    var used_multiline: bool = false;
+    var idx: usize = 0;
+    var skip_next_line: bool = false;
+
+    for (all_elements.items, 0..) |got, i| {
+        idx = i + curr_it;
+        this_line = got;
+
+        if (skip_next_line) {
+            // std.debug.print("skipping [{s}]\n", .{next_line});
+            continue;
+        }
+        next_line = &.{};
+
+        if (idx < all_elements.items.len - 1) {
+            next_line = all_elements.items[idx + 1];
+        } else {
+            next_line = "";
+        }
+
+        while (std.mem.endsWith(u8, this_line, "\\") and curr_it < ITERATION_MAX_MULTI_LINE_CMD) {
+            curr_it += 1;
+            used_multiline = true;
+
+            if (!std.mem.eql(u8, this_line, next_line)) {
+                try tmp_l.appendSlice(allocator, this_line[0 .. this_line.len - 1]);
+                try tmp_l.appendSlice(allocator, " && ");
+            }
+
+            if (std.mem.endsWith(u8, next_line, "\\")) {
+                try tmp_l.appendSlice(allocator, next_line[0 .. next_line.len - 1]);
+                try tmp_l.appendSlice(allocator, " && ");
+            }
+
+            if (idx < all_elements.items.len - (curr_it + 1)) {
+                next_line = all_elements.items[idx + curr_it + 1];
+            } else {
+                next_line = "";
+            }
+            this_line = next_line;
+
+            // if next line is the end, just add it
+            if (!std.mem.endsWith(u8, next_line, "\\")) {
+                if (!std.mem.eql(u8, next_line, "")) {
+                    // try tmp_l.appendSlice(allocator, " && ");
+                    try tmp_l.appendSlice(allocator, next_line);
+                }
+                skip_next_line = true;
+            }
+        }
+
+        if (used_multiline) {
+            try push_cpy(allocator, into, tmp_l.items);
+            used_multiline = false;
+        } else {
+            try push_cpy(allocator, into, got);
+        }
+        cnt += 1;
+    }
+
+    return cnt;
 }
 
 pub fn read_hist(
+    io: std.Io,
     anyalloc: std.mem.Allocator,
     arrlist: *std.ArrayList([]const u8),
     params: ReadParams,
 ) !NB_ENTRY_READ_TYPE {
-    const cwd = std.fs.cwd();
+    const cwd = std.Io.Dir.cwd();
+    var hist_dir: std.Io.Dir = try cwd.openDir(io, params.directory, .{});
+    defer hist_dir.close(io);
 
-    var hist_dir: std.fs.Dir = try cwd.openDir(params.directory, .{});
-    defer hist_dir.close();
+    const thefile = try hist_dir.openFile(io, params.name, .{ .mode = .read_only });
+    defer thefile.close(io);
 
-    const thefile = try hist_dir.openFile(params.name, .{ .mode = .read_only });
-    defer thefile.close();
-    try thefile.seekTo(0);
-
-    var tmp_l = std.ArrayList(u8).init(anyalloc);
-    defer tmp_l.deinit();
-
-    var tmp_multi_l = std.ArrayList(u8).init(anyalloc);
-    defer tmp_multi_l.deinit();
-
-    try thefile.seekTo(0);
-
-    const max_size: usize = params.entry_max_bytes;
-
-    var anyslice: []u8 = undefined;
-    var cnt: NB_ENTRY_READ_TYPE = 0;
-
-    var curr_it: u8 = 0;
-
-    // for (0..params.number_of_entries) |_| {
-    for (0..std.math.maxInt(u64)) |_| {
-        var stream_status = try read_file_delim(thefile, &tmp_l, params.delim, max_size);
-        if (stream_status == END_READING) break;
-
-        curr_it = 0;
-        while (std.mem.endsWith(u8, tmp_l.items, "\\") and curr_it < ITERATION_MAX_MULTI_LINE_CMD) {
-            curr_it += 1;
-            // reads again until we don't have \ at the end
-            stream_status = try read_file_delim(thefile, &tmp_multi_l, params.delim, max_size);
-            // removes the \
-            _ = tmp_l.pop();
-            // todo: this may break a lot of stuff lol
-            try tmp_l.appendSlice(" && ");
-            try tmp_l.appendSlice(tmp_multi_l.items);
-            // std.debug.print("multi-line here, next -> {s}, new {s}\n", .{ tmp_multi_l.items, tmp_l.items });
-            if (stream_status == END_READING) break;
-        }
-
-        cnt += 1;
-        anyslice = try tmp_l.toOwnedSlice();
-        try arrlist.append(anyslice);
-    }
+    const cnt = try read_file_delim(
+        thefile,
+        arrlist,
+        params.delim,
+        io,
+        anyalloc,
+    );
 
     // reverses the arr to get last hist entries first
     try reverse_arr_list(anyalloc, arrlist);
@@ -112,15 +154,15 @@ pub fn reverse_arr_list(
     anyalloc: std.mem.Allocator,
     input: *std.ArrayList([]const u8),
 ) !void {
-    var tmp = std.ArrayList([]const u8).init(anyalloc);
-    defer tmp.deinit();
+    var tmp = std.ArrayList([]const u8).empty;
+    defer tmp.deinit(anyalloc);
 
-    tmp = try input.clone();
+    tmp = try input.clone(anyalloc);
     input.clearRetainingCapacity();
 
     for (tmp.items, 0..) |_, i| {
         const val = tmp.items[tmp.items.len - 1 - i];
-        try input.append(val);
+        try input.append(anyalloc, val);
     }
     return;
 }
@@ -128,45 +170,72 @@ pub fn reverse_arr_list(
 test "reverse_arr_list" {
     const anyalloc = std.testing.allocator;
 
-    var list = std.ArrayList([]const u8).init(anyalloc);
-    defer list.deinit();
+    var list = std.ArrayList([]const u8).empty;
+    defer list.deinit(anyalloc);
 
-    try list.append("hello");
-    try list.append("world");
+    try list.append(anyalloc, "hello");
+    try list.append(anyalloc, "world");
 
     try reverse_arr_list(anyalloc, &list);
 
-    try std.testing.expect(std.mem.eql(u8, "world", list.items[0]));
-    try std.testing.expect(std.mem.eql(u8, "hello", list.items[1]));
+    try std.testing.expectEqualStrings("world", list.items[0]);
+    try std.testing.expectEqualStrings("hello", list.items[1]);
 }
 
-test "read_hist" {
+test "read_hist and test parse" {
+    const io: std.Io = std.testing.io;
+
     const anyalloc = std.testing.allocator;
 
-    var arr_l = std.ArrayList([]const u8).init(anyalloc);
-    defer arr_l.deinit();
+    const tmp_dir = try std.Io.Dir.openDirAbsolute(io, "/tmp", .{});
+    defer tmp_dir.close(io);
+
+    const tmp_filename = try tmp_dir.createFile(io, "test_parse_hist", .{});
+    defer tmp_filename.close(io);
+
+    const input_lines = [_][]const u8{
+        ": 1752270230:0;img Screenshot\\ from\\ 2025-07-11\\ 15-35-32.png",
+        ": 1752270233:0;gcc -o pi_approx2 main2.c -O3 -lpthread",
+        ": 1752246391:0;zig build docs\\",
+        "python3 -m http.server -d zig-out/docs\\",
+        "random broken\\",
+        "command here\\",
+        "yet another cmd\\",
+        "yet another cmd 2",
+    };
+
+    var file_writer = tmp_filename.writer(io, &.{});
+    const writer = &file_writer.interface;
+
+    for (input_lines) |line| {
+        _ = try writer.write(line);
+        _ = try writer.writeByte('\n');
+    }
+    var arr_l = std.ArrayList([]const u8).empty;
+    defer arr_l.deinit(anyalloc);
     defer {
         for (arr_l.items) |this_item| {
             anyalloc.free(this_item);
         }
     }
-    const to_read_cnt = 24;
-    const read_entries = try read_hist(anyalloc, &arr_l, .{
-        .name = "build.zig.zon",
-        .directory = ".",
+
+    const to_read_cnt = 42;
+    _ = try read_hist(io, anyalloc, &arr_l, .{
+        .name = "test_parse_hist",
+        .directory = "/tmp/",
         .delim = '\n',
         .entry_max_bytes = 256,
         .number_of_entries = to_read_cnt,
     });
-    _ = read_entries; // autofix
 
-    const expected =
-        \\.fingerprint = 0xd7fbfdac645780a2,
-    ;
-    _ = expected; // autofix
-
-    // list is reversed
-    // disabled, because when .zon file is edied the test may fail
-    // try std.testing.expectEqual(to_read_cnt, read_entries);
-    // try std.testing.expect(std.mem.eql(u8, expected, arr_l.items[23][4..]));
+    inline for (
+        &.{
+            ": 1752246391:0;zig build docs && python3 -m http.server -d zig-out/docs && random broken && command here && yet another cmd && yet another cmd 2",
+            ": 1752270233:0;gcc -o pi_approx2 main2.c -O3 -lpthread",
+            ": 1752270230:0;img Screenshot\\ from\\ 2025-07-11\\ 15-35-32.png",
+        },
+        arr_l.items,
+    ) |val1, val2| {
+        try std.testing.expectEqualStrings(val1, val2);
+    }
 }

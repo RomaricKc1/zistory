@@ -6,4 +6,4 @@
 : 1752270230:0;img Screenshot\ from\ 2025-07-11\ 15-35-32.png
 : 1752270233:0;gcc -o pi_approx2 main2.c -O3 -lpthread
 : 1752246391:0;zig build docs\
-python3 -m http.server -d zig-out/docs 
+python3 -m http.server -d zig-out/docs
